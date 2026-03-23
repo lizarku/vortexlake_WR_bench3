@@ -2,10 +2,9 @@ package com.vortexlake.bench;
 
 import com.github.luben.zstd.ZstdOutputStream;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.io.SequenceInputStream;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 public class PressMain {
 
@@ -13,11 +12,18 @@ public class PressMain {
     private static final int KRYO_HEADER_SIZE = 24;
 
     public static InputStream compress(InputStream encodedStream, String encodingType) throws Exception {
-
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (ZstdOutputStream zstdOut = new ZstdOutputStream(baos, ZSTD_LEVEL)) {
+        Path tempFile = Files.createTempFile("zstd_", ".zst");
+        try (FileOutputStream fos = new FileOutputStream(tempFile.toFile());
+             BufferedOutputStream bos = new BufferedOutputStream(fos);
+             ZstdOutputStream zstdOut = new ZstdOutputStream(bos, ZSTD_LEVEL)) {
             encodedStream.transferTo(zstdOut);
         }
-        return new ByteArrayInputStream(baos.toByteArray());
+        return new BufferedInputStream(new FileInputStream(tempFile.toFile()) {
+            @Override
+            public void close() throws IOException {
+                super.close();
+                Files.deleteIfExists(tempFile);
+            }
+        });
     }
 }

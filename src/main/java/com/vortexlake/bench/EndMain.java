@@ -12,86 +12,112 @@ import java.time.format.DateTimeFormatter;
 
 /**
  * 파일 저장 및 리포트 기록 담당 모듈.
- *
- * PressMain 에서 받은 압축 스트림을 output 파일로 저장하고,
- * 처리 통계(시작/완료 시간, 용량, 압축률)를 리포트 파일에 기록한다.
- *
- * 리포트 파일 경로:
- *   {output 파일 위치}/report/{output 파일명}.txt
- *   예) output/20260311/sample.kryo.zst
- *    → output/20260311/report/sample.kryo.zst.txt
  */
 public class EndMain {
 
-    /**
-     * 압축된 스트림을 파일로 저장하고 리포트를 기록한다.
-     *
-     * @param compressedStream PressMain 에서 반환된 압축 스트림
-     * @param outputFilePath   저장할 output 파일 전체 경로
-     * @param startTime        Main 에서 기록한 시작 시간 (epoch millis)
-     * @param inputFilePath    원본 .done 파일 경로 (리포트용)
-     * @param inputSize        원본 파일 용량 bytes (리포트용)
-     * @param encodingType     사용된 인코딩 방식 (리포트용)
-     */
     public static void save(
             java.io.InputStream compressedStream,
             java.nio.file.Path outputFilePath,
-            long startTime,
+            long startNano,
             java.nio.file.Path inputFilePath,
             long inputSize,
-            String encodingType) throws Exception {
+            String encodingType,
+            int logCount,
+            long parseNs,
+            long serializeNs,
+            long compressNs,
+            long serializedSize) throws Exception {
+
+        long saveStartNano = System.nanoTime();
 
         // ── STEP 1. output 파일 저장 ─────────────────────────────────────────
-         FileOutputStream fos = new FileOutputStream(outputFilePath.toFile());
-         compressedStream.transferTo(fos);
-         fos.close();
+        FileOutputStream fos = new FileOutputStream(outputFilePath.toFile());
+        compressedStream.transferTo(fos);
+        fos.close();
 
         // ── STEP 2. 완료 시간 / output 용량 측정 ─────────────────────────────
-         long endTime = System.currentTimeMillis();
-         long outputSize = Files.size(outputFilePath);
-         long elapsedMs = endTime - startTime;
+        long endNano = System.nanoTime();
+        long outputSize = Files.size(outputFilePath);
+        long saveNs = endNano - saveStartNano;
+        long totalNs = endNano - startNano;
 
-        // ── STEP 3. report 디렉토리 준비 ─────────────────────────────────────
-         Path reportDir = outputFilePath.getParent().resolve("report");
-         if (!Files.exists(reportDir)) Files.createDirectories(reportDir);
+        // ms 변환
+        long parseMs = parseNs / 1_000_000;
+        long serializeMs = serializeNs / 1_000_000;
+        long compressMs = compressNs / 1_000_000;
+        long saveMs = saveNs / 1_000_000;
+        long totalMs = totalNs / 1_000_000;
 
-        // ── STEP 4. 리포트 파일 경로 결정 ────────────────────────────────────
-         String reportFileName = outputFilePath.getFileName().toString() + ".txt.txt";
-         Path reportFilePath = reportDir.resolve(reportFileName);
+        // ── STEP 3. 비율 계산 ────────────────────────────────────────────────
+        // 원본 대비 직렬화 비율 (직렬화로 얼마나 줄었나/늘었나)
+        double serializeRatio = (double) serializedSize / inputSize * 100;
+        // 원본 대비 최종 압축 비율
+        double totalCompressionRatio = (1.0 - (double) outputSize / inputSize) * 100;
+        // 직렬화 대비 압축 비율 (압축이 직렬화 산출물을 얼마나 줄였나)
+        double zstdCompressionRatio = (1.0 - (double) outputSize / serializedSize) * 100;
 
-        // ── STEP 5. 압축률 계산 ───────────────────────────────────────────────
-         double compressionRatio = (1.0 - (double) outputSize / inputSize) * 100;
-         String ratioStr = "%.1f%%".formatted(compressionRatio);
+        // ── STEP 4. report 디렉토리 준비 ─────────────────────────────────────
+        Path reportDir = Path.of("/opt/logs/result/report");
+        if (!Files.exists(reportDir)) Files.createDirectories(reportDir);
+
+        // ── STEP 5. 리포트 파일 경로 결정 ────────────────────────────────────
+        String reportFileName = outputFilePath.getFileName().toString() + ".txt";
+        Path reportFilePath = reportDir.resolve(reportFileName);
 
         // ── STEP 6. 리포트 파일 작성 ─────────────────────────────────────────
-         BufferedWriter writer = Files.newBufferedWriter(reportFilePath, StandardCharsets.UTF_8);
-//         아래 형식으로 작성:
+        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+        long now = System.currentTimeMillis();
+        BufferedWriter writer = Files.newBufferedWriter(reportFilePath, StandardCharsets.UTF_8);
 
-//           인코딩 방식  : {encodingType}
-//           원본 파일    : {inputFilePath.toAbsolutePath()}
-//           원본 용량    : {inputSize} bytes ({inputSize / 1024 / 1024} MB)
-//           시작 시간    : {LocalDateTime from startTime}  (yyyy-MM-dd HH:mm:ss.SSS)
-//           완료 시간    : {LocalDateTime from endTime}    (yyyy-MM-dd HH:mm:ss.SSS)
-//           소요 시간    : {elapsedMs} ms
-//           output 파일  : {outputFilePath.toAbsolutePath()}
-//           output 용량  : {outputSize} bytes ({outputSize / 1024 / 1024} MB)
-//           압축률       : {compressionRatio}%
-        writer.write("인코딩 방식  : " + encodingType); writer.newLine();
-        writer.write("원본 파일    : " + inputFilePath.toAbsolutePath()); writer.newLine();
-        writer.write("원본 용량    : " + inputSize + " bytes (" + inputSize / 1024 / 1024 + " MB)"); writer.newLine();
-        writer.write("시작 시간    : " + LocalDateTime.ofInstant(Instant.ofEpochMilli(startTime),
-                ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"))); writer.newLine();
-        writer.write("완료 시간    : " + LocalDateTime.ofInstant(Instant.ofEpochMilli(endTime),
-                ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"))); writer.newLine();
-        writer.write("소요 시간    : " + elapsedMs + " ms"); writer.newLine();
-        writer.write("output 파일  : " + outputFilePath.toAbsolutePath()); writer.newLine();
-        writer.write("output 용량  : " + outputSize + " bytes (" + outputSize / 1024 / 1024 + " MB)"); writer.newLine();
-        writer.write("압축률       : " + String.format("%.1f", compressionRatio) + "%"); writer.newLine();
-         writer.close();
+        writer.write("========================================"); writer.newLine();
+        writer.write("  벤치마크 결과 리포트"); writer.newLine();
+        writer.write("========================================"); writer.newLine();
+        writer.newLine();
 
-        // ── STEP 7. 콘솔 출력 (진행 상황 확인용) ──────────────────────────────
-         System.out.printf("[완료] %s → %s (%.1f%%, %d ms)%n",
-             inputFilePath.getFileName(), outputFilePath.getFileName(),
-             compressionRatio, elapsedMs);
+        writer.write("인코딩 방식    : " + encodingType); writer.newLine();
+        writer.write("원본 경로      : " + inputFilePath.toAbsolutePath()); writer.newLine();
+        writer.write("로그 건수      : " + String.format("%,d", logCount) + " 건"); writer.newLine();
+        writer.newLine();
+
+        writer.write("--- 시간 측정 (nanoTime 기반) ---"); writer.newLine();
+        writer.write("시작 시간      : " + LocalDateTime.ofInstant(Instant.ofEpochMilli(now - totalMs),
+                ZoneId.systemDefault()).format(dtf)); writer.newLine();
+        writer.write("완료 시간      : " + LocalDateTime.ofInstant(Instant.ofEpochMilli(now),
+                ZoneId.systemDefault()).format(dtf)); writer.newLine();
+        writer.write("읽기+파싱      : " + String.format("%,d", parseMs) + " ms"); writer.newLine();
+        writer.write("직렬화         : " + String.format("%,d", serializeMs) + " ms"); writer.newLine();
+        writer.write("압축(zstd L1)  : " + String.format("%,d", compressMs) + " ms"); writer.newLine();
+        writer.write("저장           : " + String.format("%,d", saveMs) + " ms"); writer.newLine();
+        writer.write("전체 소요      : " + String.format("%,d", totalMs) + " ms"); writer.newLine();
+        writer.newLine();
+
+        writer.write("--- 용량 ---"); writer.newLine();
+        writer.write("원본 용량      : " + String.format("%,d", inputSize) + " bytes ("
+                + inputSize / 1024 / 1024 + " MB)"); writer.newLine();
+        writer.write("직렬화 후 용량 : " + String.format("%,d", serializedSize) + " bytes ("
+                + serializedSize / 1024 / 1024 + " MB)"); writer.newLine();
+        writer.write("압축 후 용량   : " + String.format("%,d", outputSize) + " bytes ("
+                + outputSize / 1024 / 1024 + " MB)"); writer.newLine();
+        writer.newLine();
+
+        writer.write("--- 비율 분석 ---"); writer.newLine();
+        writer.write("원본 대비 직렬화 용량  : " + String.format("%.1f", serializeRatio) + "%"
+                + (serializeRatio < 100 ? " (축소)" : " (확대)")); writer.newLine();
+        writer.write("직렬화 대비 압축 절감  : " + String.format("%.1f", zstdCompressionRatio) + "%"); writer.newLine();
+        writer.write("원본 대비 최종 절감    : " + String.format("%.1f", totalCompressionRatio) + "%"); writer.newLine();
+        writer.newLine();
+
+        writer.write("output 파일    : " + outputFilePath.toAbsolutePath()); writer.newLine();
+        writer.close();
+
+        // ── STEP 7. 콘솔 출력 ───────────────────────────────────────────────
+        System.out.printf("[완료] %s | 원본: %dMB → 직렬화: %dMB (%.1f%%) → 압축: %dMB (최종 절감 %.1f%%, %,d ms)%n",
+                encodingType,
+                inputSize / 1024 / 1024,
+                serializedSize / 1024 / 1024,
+                serializeRatio,
+                outputSize / 1024 / 1024,
+                totalCompressionRatio,
+                totalMs);
     }
 }
